@@ -1,0 +1,508 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>3D Cube Maker</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <style>
+        body {
+            margin: 0;
+            overflow: hidden;
+            font-family: 'Inter', sans-serif;
+            background-color: #1a1a1a;
+            color: #f0f0f0;
+        }
+        canvas {
+            display: block;
+            width: 100vw;
+            height: 100vh;
+        }
+        .action-buttons {
+            position: fixed;
+            top: 0.5rem;
+            left: 0.5rem;
+            display: flex;
+            flex-direction: column;
+            gap: 0.5rem;
+            z-index: 100;
+        }
+        .main-controls {
+            display: flex;
+            gap: 0.5rem;
+        }
+        .action-button {
+            padding: 0.25rem 0.5rem;
+            font-size: 1.5rem;
+            line-height: 1;
+            font-weight: bold;
+            color: #fff;
+            background-color: #4a4a4a;
+            border-radius: 0.5rem;
+            cursor: pointer;
+            user-select: none;
+            transition: transform 0.2s, background-color 0.2s;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+        }
+        .action-button:hover {
+            transform: scale(1.1);
+        }
+        .action-button.active {
+            background-color: #63c5da;
+        }
+        .color-buttons-container {
+            position: fixed;
+            bottom: 0.5rem;
+            left: 0.5rem;
+            z-index: 100;
+        }
+        .controls-container {
+            position: fixed;
+            top: 0.5rem;
+            right: 0.5rem;
+            display: flex;
+            flex-direction: column;
+            gap: 0.5rem;
+            z-index: 100;
+        }
+        .control-button {
+            padding: 0.125rem 0.25rem;
+            font-size: 0.75rem;
+            line-height: 1;
+            font-weight: bold;
+            color: #fff;
+            background-color: #4a4a4a;
+            border-radius: 0.5rem;
+            cursor: pointer;
+            user-select: none;
+            transition: background-color 0.2s;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+        }
+        .control-button.active {
+            background-color: #63c5da;
+        }
+        .control-button:hover {
+            background-color: #6a6a6a;
+        }
+        .em-dash {
+            font-size: 0.75rem;
+        }
+        .color-button {
+            width: 32px;
+            height: 32px;
+            border-radius: 50%;
+            cursor: pointer;
+            transition: border 0.2s;
+            border: 2px solid transparent;
+        }
+        .color-button.active {
+            border-color: #fff;
+        }
+    </style>
+</head>
+<body class="bg-gray-900 text-gray-200">
+    <div id="container"></div>
+
+    <div class="action-buttons">
+        <div class="main-controls">
+            <button id="plus-sign" class="action-button active">+</button>
+            <button id="minus-sign" class="action-button"><span class="em-dash">—</span></button>
+            <button id="clear-all" class="action-button flex justify-center items-center">
+                <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-x-circle"><circle cx="12" cy="12" r="10"/><path d="m15 9-6 6"/><path d="m9 9 6 6"/></svg>
+            </button>
+        </div>
+    </div>
+    
+    <div class="controls-container">
+        <button id="view-2d" class="control-button active">2D</button>
+        <button id="view-3d" class="control-button">3D</button>
+        <button id="zoom-in" class="control-button">
+            <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-zoom-in"><circle cx="11" cy="11" r="8"/><line x1="21" x2="16.65" y1="21" y2="16.65"/><line x1="11" x2="11" y1="8" y2="14"/><line x1="8" x2="14" y1="11" y2="11"/></svg>
+        </button>
+        <button id="zoom-out" class="control-button">
+            <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-zoom-out"><circle cx="11" cy="11" r="8"/><line x1="21" x2="16.65" y1="21" y2="16.65"/><line x1="8" x2="14" y1="11" y2="11"/></svg>
+        </button>
+    </div>
+
+    <div class="color-buttons-container">
+        <div class="flex flex-row gap-2 mt-2">
+            <button id="color-red" class="color-button" style="background-color: #FF0000;"></button>
+            <button id="color-yellow" class="color-button" style="background-color: #FFFF00;"></button>
+            <button id="color-blue" class="color-button" style="background-color: #0000FF;"></button>
+            <button id="color-green" class="color-button" style="background-color: #00FF00;"></button>
+            <button id="color-orange" class="color-button" style="background-color: #FFA500;"></button>
+            <button id="color-purple" class="color-button" style="background-color: #800080;"></button>
+        </div>
+    </div>
+
+    <script>
+        window.onload = function() {
+            // --- Scene Setup ---
+            const container = document.getElementById('container');
+            const scene = new THREE.Scene();
+            const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+            const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            renderer.setClearColor(0x000000, 0);
+            container.appendChild(renderer.domElement);
+
+            // --- Camera and Controls ---
+            const topDownCameraPosition = new THREE.Vector3(0, 50, 0);
+            const default3DCameraPosition = new THREE.Vector3(15, 15, 15);
+            let is2DMode = true;
+            let isDraggingCamera = false;
+            let previousMousePosition = {
+                x: 0,
+                y: 0
+            };
+            
+            camera.position.copy(topDownCameraPosition);
+            camera.lookAt(0, 0, 0);
+            
+            // --- Grid and Interaction Planes ---
+            const gridSize = 16;
+            const cubeSize = 3;
+            const MAX_GRID_POS = (gridSize / 2 - 0.5) * cubeSize;
+            
+            const gridGroup = new THREE.Group();
+            scene.add(gridGroup);
+            const gridHelper = new THREE.GridHelper(gridSize * cubeSize, gridSize, 0xaaaaaa, 0x555555);
+            gridGroup.add(gridHelper);
+            const invisiblePlaneGroup = new THREE.Group();
+            scene.add(invisiblePlaneGroup);
+            const planeGeometry = new THREE.PlaneGeometry(gridSize * cubeSize, gridSize * cubeSize);
+            const planeMaterial = new THREE.MeshBasicMaterial({ color: 0xff0000, transparent: true, opacity: 0 });
+            const groundPlane = new THREE.Mesh(planeGeometry, planeMaterial);
+            groundPlane.rotation.x = -Math.PI / 2;
+            invisiblePlaneGroup.add(groundPlane);
+
+            // --- Cube Management ---
+            const cubes = [];
+            const raycaster = new THREE.Raycaster();
+            const mouse = new THREE.Vector2();
+            let isPlacementMode = true;
+            let isDeleteMode = false;
+            let isDragging = false;
+            let previousPosition = null;
+            let currentCubeColor = 0x808080; // Default color: gray
+
+            // Ghost Cube Setup
+            const ghostGeometry = new THREE.BoxGeometry(cubeSize - 0.2, cubeSize - 0.2, cubeSize - 0.2);
+            const ghostPlacementMaterial = new THREE.MeshBasicMaterial({ color: 0x63c5da, transparent: true, opacity: 0.6 });
+            const ghostDeleteMaterial = new THREE.MeshBasicMaterial({ color: 0xff0000, transparent: true, opacity: 0.3 });
+            const ghostCube = new THREE.Mesh(ghostGeometry, ghostPlacementMaterial);
+            ghostCube.visible = false;
+            scene.add(ghostCube);
+
+            // This will hold the current position of the ghost cube for both mouse and keyboard control
+            let ghostCubePosition = new THREE.Vector3(cubeSize / 2, cubeSize / 2, cubeSize / 2);
+            ghostCube.position.copy(ghostCubePosition);
+            
+            function createCube(position) {
+                const isOccupied = cubes.some(c => c.position.equals(position));
+                if (!isOccupied) {
+                    const cubeGeometry = new THREE.BoxGeometry(cubeSize - 0.2, cubeSize - 0.2, cubeSize - 0.2);
+                    const cubeMaterial = new THREE.MeshStandardMaterial({ color: currentCubeColor, metalness: 0.1, roughness: 0.5 });
+                    const cube = new THREE.Mesh(cubeGeometry, cubeMaterial);
+                    cube.position.copy(position);
+                    scene.add(cube);
+                    cubes.push(cube);
+                }
+            }
+
+            function clearAllCubes() {
+                while(cubes.length > 0) {
+                    const cube = cubes.pop();
+                    scene.remove(cube);
+                }
+            }
+            
+            function deleteCubeAt(position) {
+                const cubeToDelete = cubes.find(c => c.position.equals(position));
+                if (cubeToDelete) {
+                    scene.remove(cubeToDelete);
+                    const index = cubes.indexOf(cubeToDelete);
+                    if (index > -1) {
+                        cubes.splice(index, 1);
+                    }
+                }
+            }
+
+            // --- Core Interaction Logic ---
+            const plusSignBtn = document.getElementById('plus-sign');
+            const minusSignBtn = document.getElementById('minus-sign');
+            const clearAllBtn = document.getElementById('clear-all');
+
+            function setMode(mode) {
+                isPlacementMode = (mode === 'plus');
+                isDeleteMode = (mode === 'minus');
+                plusSignBtn.classList.toggle('active', isPlacementMode);
+                minusSignBtn.classList.toggle('active', isDeleteMode);
+                ghostCube.material = isPlacementMode ? ghostPlacementMaterial : ghostDeleteMaterial;
+                ghostCube.visible = true;
+                document.body.style.cursor = isPlacementMode ? 'copy' : 'crosshair';
+            }
+            
+            plusSignBtn.addEventListener('click', () => setMode('plus'));
+            minusSignBtn.addEventListener('click', () => setMode('minus'));
+
+            clearAllBtn.addEventListener('click', () => {
+                clearAllCubes();
+                setMode('plus'); // Reset to placement mode
+                ghostCube.visible = true;
+                document.body.style.cursor = 'copy';
+            });
+            
+            // Initial state
+            setMode('plus');
+
+            // Color buttons logic
+            const colors = {
+                'color-red': 0xFF0000,
+                'color-yellow': 0xFFFF00,
+                'color-blue': 0x0000FF,
+                'color-green': 0x00FF00,
+                'color-orange': 0xFFA500,
+                'color-purple': 0x800080
+            };
+            const colorButtons = document.querySelectorAll('.color-button');
+            colorButtons.forEach(button => {
+                button.addEventListener('click', () => {
+                    colorButtons.forEach(btn => btn.classList.remove('active'));
+                    button.classList.add('active');
+                    currentCubeColor = colors[button.id];
+                    ghostPlacementMaterial.color.setHex(currentCubeColor);
+                });
+            });
+
+            // Set a default color to start
+            document.getElementById('color-red').click();
+
+
+            // Mouse move for moving ghost cube and dragging
+            renderer.domElement.addEventListener('mousemove', (event) => {
+                if (!isDraggingCamera) {
+                    mouse.x = (event.clientX / window.innerWidth) * 2 - 1;
+                    mouse.y = -(event.clientY / window.innerHeight) * 2 + 1;
+                    raycaster.setFromCamera(mouse, camera);
+
+                    let newPos = null;
+                    const cubeIntersects = raycaster.intersectObjects(cubes);
+                    const groundIntersects = raycaster.intersectObjects([groundPlane]);
+
+                    if (isPlacementMode) {
+                        if (cubeIntersects.length > 0) {
+                            const intersectedObject = cubeIntersects[0].object;
+                            const normal = cubeIntersects[0].face.normal.clone().normalize();
+                            newPos = new THREE.Vector3().addVectors(intersectedObject.position, normal.multiplyScalar(cubeSize));
+                        } else if (groundIntersects.length > 0) {
+                            const hitPoint = groundIntersects[0].point;
+                            const snappedX = Math.round(hitPoint.x / cubeSize) * cubeSize + cubeSize / 2;
+                            const snappedZ = Math.round(hitPoint.z / cubeSize) * cubeSize + cubeSize / 2;
+                            newPos = new THREE.Vector3(snappedX, cubeSize / 2, snappedZ);
+                        }
+                    } else if (isDeleteMode) {
+                        if (cubeIntersects.length > 0) {
+                            newPos = cubeIntersects[0].object.position;
+                        }
+                    }
+                    
+                    if (newPos) {
+                        ghostCubePosition.copy(newPos);
+                        const withinBounds = Math.abs(ghostCubePosition.x) <= MAX_GRID_POS &&
+                                            ghostCubePosition.y >= cubeSize / 2 && ghostCubePosition.y <= (gridSize * cubeSize) + cubeSize / 2 &&
+                                            Math.abs(ghostCubePosition.z) <= MAX_GRID_POS;
+                        
+                        if (withinBounds) {
+                            ghostCube.position.copy(ghostCubePosition);
+                            ghostCube.visible = true;
+                            if (isDragging) {
+                                if (previousPosition && !ghostCubePosition.equals(previousPosition)) {
+                                    if (isPlacementMode) {
+                                        createCube(ghostCubePosition);
+                                    } else {
+                                        deleteCubeAt(ghostCubePosition);
+                                    }
+                                    previousPosition = ghostCubePosition.clone();
+                                }
+                            }
+                        } else {
+                            ghostCube.visible = false;
+                        }
+                    } else {
+                        ghostCube.visible = false;
+                    }
+                }
+            });
+
+            // Click and drag listeners
+            renderer.domElement.addEventListener('mousedown', (event) => {
+                isDragging = true;
+                isDraggingCamera = event.shiftKey; // Hold shift to drag camera
+                if (isDraggingCamera) {
+                    previousMousePosition.x = event.clientX;
+                    previousMousePosition.y = event.clientY;
+                    document.body.style.cursor = 'grabbing';
+                } else {
+                    previousPosition = ghostCubePosition.clone();
+                    if (ghostCube.visible) {
+                        if (isPlacementMode) {
+                            createCube(ghostCubePosition);
+                        } else if (isDeleteMode) {
+                            deleteCubeAt(ghostCubePosition);
+                        }
+                    }
+                }
+            });
+
+            renderer.domElement.addEventListener('mouseup', () => {
+                isDragging = false;
+                isDraggingCamera = false;
+                previousPosition = null;
+                document.body.style.cursor = isPlacementMode ? 'copy' : 'crosshair';
+            });
+            
+            renderer.domElement.addEventListener('mousemove', (event) => {
+                if (isDraggingCamera && !is2DMode) {
+                    const deltaX = event.clientX - previousMousePosition.x;
+                    const deltaY = event.clientY - previousMousePosition.y;
+
+                    const target = new THREE.Vector3();
+                    camera.getWorldDirection(target);
+
+                    const right = new THREE.Vector3().crossVectors(camera.up, target);
+                    const up = new THREE.Vector3().crossVectors(target, right);
+
+                    const yawRotation = new THREE.Quaternion().setFromAxisAngle(up, deltaX * -0.01);
+                    const pitchRotation = new THREE.Quaternion().setFromAxisAngle(right, deltaY * 0.01);
+
+                    const finalRotation = new THREE.Quaternion().multiplyQuaternions(pitchRotation, yawRotation);
+
+                    const rotatedPosition = new THREE.Vector3().copy(camera.position).applyQuaternion(finalRotation);
+                    
+                    camera.position.copy(rotatedPosition);
+                    camera.lookAt(0, 0, 0);
+
+                    previousMousePosition.x = event.clientX;
+                    previousMousePosition.y = event.clientY;
+                }
+            });
+
+            // Click listener for placing a single cube (without dragging)
+            renderer.domElement.addEventListener('click', () => {
+                if (!isDragging && ghostCube.visible) {
+                    if (isPlacementMode) {
+                        createCube(ghostCubePosition);
+                    } else if (isDeleteMode) {
+                        deleteCubeAt(ghostCubePosition);
+                    }
+                }
+            });
+
+            // Keyboard controls
+            window.addEventListener('keydown', (event) => {
+                let moved = false;
+                const newPos = ghostCubePosition.clone();
+
+                switch(event.key) {
+                    case 'ArrowUp':
+                        newPos.z -= cubeSize;
+                        moved = true;
+                        break;
+                    case 'ArrowDown':
+                        newPos.z += cubeSize;
+                        moved = true;
+                        break;
+                    case 'ArrowLeft':
+                        newPos.x -= cubeSize;
+                        moved = true;
+                        break;
+                    case 'ArrowRight':
+                        newPos.x += cubeSize;
+                        moved = true;
+                        break;
+                    case ' ':
+                    case 'Enter':
+                        if (isPlacementMode) {
+                            createCube(ghostCubePosition);
+                        } else if (isDeleteMode) {
+                            deleteCubeAt(ghostCubePosition);
+                        }
+                        event.preventDefault(); // Prevents page from scrolling with space/enter key
+                        break;
+                }
+
+                if (moved) {
+                    const withinBounds = Math.abs(newPos.x) <= MAX_GRID_POS &&
+                                         newPos.y >= cubeSize / 2 && newPos.y <= (gridSize * cubeSize) + cubeSize / 2 &&
+                                         Math.abs(newPos.z) <= MAX_GRID_POS;
+                    if (withinBounds) {
+                        ghostCubePosition.copy(newPos);
+                        ghostCube.position.copy(ghostCubePosition);
+                        ghostCube.visible = true;
+                    }
+                }
+            });
+            
+            // Camera View Controls
+            const zoomInBtn = document.getElementById('zoom-in');
+            const zoomOutBtn = document.getElementById('zoom-out');
+            const view2DBtn = document.getElementById('view-2d');
+            const view3DBtn = document.getElementById('view-3d');
+
+            function setViewMode(mode) {
+                is2DMode = (mode === '2d');
+                view2DBtn.classList.toggle('active', is2DMode);
+                view3DBtn.classList.toggle('active', !is2DMode);
+
+                if (is2DMode) {
+                    camera.position.copy(topDownCameraPosition);
+                    camera.lookAt(0, 0, 0);
+                    gridHelper.rotation.x = 0;
+                } else {
+                    camera.position.copy(default3DCameraPosition);
+                    camera.lookAt(0, 0, 0);
+                }
+            }
+
+            view2DBtn.addEventListener('click', () => setViewMode('2d'));
+            view3DBtn.addEventListener('click', () => setViewMode('3d'));
+
+            zoomInBtn.addEventListener('click', () => {
+                camera.translateZ(-3);
+            });
+
+            zoomOutBtn.addEventListener('click', () => {
+                camera.translateZ(3);
+            });
+            
+            // --- Animation Loop ---
+            function animate() {
+                requestAnimationFrame(animate);
+                renderer.render(scene, camera);
+            }
+
+            // Add lights to the scene
+            const ambientLight = new THREE.AmbientLight(0xffffff, 0.5);
+            scene.add(ambientLight);
+            const directionalLight = new THREE.DirectionalLight(0xffffff, 0.8);
+            directionalLight.position.set(10, 20, 10);
+            scene.add(directionalLight);
+
+            animate();
+
+            // Handle window resizing
+            window.addEventListener('resize', () => {
+                camera.aspect = window.innerWidth / window.innerHeight;
+                camera.updateProjectionMatrix();
+                renderer.setSize(window.innerWidth, window.innerHeight);
+            });
+        };
+    </script>
+</body>
+</html>
