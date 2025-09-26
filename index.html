@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>3D Cube Maker</title>
+    <title>3D Cube Builder</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
     <style>
@@ -151,6 +151,13 @@
             renderer.setClearColor(0x000000, 0);
             container.appendChild(renderer.domElement);
 
+            // --- Cube Group and World Group ---
+            const cubeContainer = new THREE.Group();
+            scene.add(cubeContainer);
+
+            const worldGroup = new THREE.Group();
+            scene.add(worldGroup);
+
             // --- Camera and Controls ---
             const topDownCameraPosition = new THREE.Vector3(0, 50, 0);
             const default3DCameraPosition = new THREE.Vector3(15, 15, 15);
@@ -168,18 +175,15 @@
             const gridSize = 16;
             const cubeSize = 3;
             const MAX_GRID_POS = (gridSize / 2 - 0.5) * cubeSize;
+            const MAX_HEIGHT_POS = (gridSize - 0.5) * cubeSize;
             
-            const gridGroup = new THREE.Group();
-            scene.add(gridGroup);
             const gridHelper = new THREE.GridHelper(gridSize * cubeSize, gridSize, 0xaaaaaa, 0x555555);
-            gridGroup.add(gridHelper);
-            const invisiblePlaneGroup = new THREE.Group();
-            scene.add(invisiblePlaneGroup);
+            worldGroup.add(gridHelper);
             const planeGeometry = new THREE.PlaneGeometry(gridSize * cubeSize, gridSize * cubeSize);
             const planeMaterial = new THREE.MeshBasicMaterial({ color: 0xff0000, transparent: true, opacity: 0 });
             const groundPlane = new THREE.Mesh(planeGeometry, planeMaterial);
             groundPlane.rotation.x = -Math.PI / 2;
-            invisiblePlaneGroup.add(groundPlane);
+            worldGroup.add(groundPlane);
 
             // --- Cube Management ---
             const cubes = [];
@@ -188,8 +192,13 @@
             let isPlacementMode = true;
             let isDeleteMode = false;
             let isDragging = false;
-            let previousPosition = null;
-            let currentCubeColor = 0x808080; // Default color: gray
+            let isShiftDragging = false;
+            let currentCubeColor = 0x808080;
+            let clipboard = null;
+            let hoveredCube = null;
+            const layerColorMap = new Map();
+            let dragStartPoint = null;
+            let lastDraggedPosition = null;
 
             // Ghost Cube Setup
             const ghostGeometry = new THREE.BoxGeometry(cubeSize - 0.2, cubeSize - 0.2, cubeSize - 0.2);
@@ -199,33 +208,170 @@
             ghostCube.visible = false;
             scene.add(ghostCube);
 
-            // This will hold the current position of the ghost cube for both mouse and keyboard control
+            // A collection of ghost meshes for the line preview
+            const ghostLineGroup = new THREE.Group();
+            scene.add(ghostLineGroup);
+
             let ghostCubePosition = new THREE.Vector3(cubeSize / 2, cubeSize / 2, cubeSize / 2);
             ghostCube.position.copy(ghostCubePosition);
             
-            function createCube(position) {
-                const isOccupied = cubes.some(c => c.position.equals(position));
-                if (!isOccupied) {
-                    const cubeGeometry = new THREE.BoxGeometry(cubeSize - 0.2, cubeSize - 0.2, cubeSize - 0.2);
-                    const cubeMaterial = new THREE.MeshStandardMaterial({ color: currentCubeColor, metalness: 0.1, roughness: 0.5 });
-                    const cube = new THREE.Mesh(cubeGeometry, cubeMaterial);
-                    cube.position.copy(position);
-                    scene.add(cube);
-                    cubes.push(cube);
+            function createCube(position, color = currentCubeColor) {
+                // Add a final boundary check before creating the cube
+                if (Math.abs(position.x) > MAX_GRID_POS + 0.1 ||
+                    Math.abs(position.z) > MAX_GRID_POS + 0.1 ||
+                    position.y > MAX_HEIGHT_POS + 0.1) {
+                    return;
                 }
+
+                // Check if a cube already exists at this exact position
+                const isOccupied = cubes.some(c => c.mesh.position.distanceTo(position) < 0.1);
+                if (isOccupied) return;
+
+                // New logic: Check the cube directly below
+                const positionBelow = position.clone();
+                positionBelow.y -= cubeSize;
+                const cubeBelow = cubes.find(c => c.mesh.position.distanceTo(positionBelow) < 0.1);
+
+                // Placement on the ground
+                if (position.y === cubeSize / 2) {
+                    // No need to check for a cube below on the ground layer
+                } else {
+                    // For layers above the ground, a cube must be directly below.
+                    if (!cubeBelow) {
+                        return; // Prevents floating cubes
+                    }
+                    // And the color of the new cube must be different from the one below.
+                    if (cubeBelow.data.color === color) {
+                        return; // Same color on top is not allowed
+                    }
+                }
+                
+                const cubeGeometry = new THREE.BoxGeometry(cubeSize - 0.2, cubeSize - 0.2, cubeSize - 0.2);
+                const materials = [
+                    new THREE.MeshStandardMaterial({ color: color }),
+                    new THREE.MeshStandardMaterial({ color: color }),
+                    new THREE.MeshStandardMaterial({ color: color }),
+                    new THREE.MeshStandardMaterial({ color: color }),
+                    new THREE.MeshStandardMaterial({ color: color }),
+                    new THREE.MeshStandardMaterial({ color: color }),
+                ];
+                const cubeMesh = new THREE.Mesh(cubeGeometry, materials);
+                cubeMesh.position.copy(position);
+                
+                const edges = new THREE.EdgesGeometry(cubeGeometry);
+                const wireframe = new THREE.LineSegments(edges, new THREE.LineBasicMaterial({ color: 0x000000, linewidth: 1 }));
+                cubeMesh.add(wireframe);
+
+                const cubeData = {
+                    mesh: cubeMesh,
+                    wireframe: wireframe,
+                    data: {
+                        position: position.clone(),
+                        color: color
+                    },
+                    originalMaterial: materials
+                };
+                cubeContainer.add(cubeMesh);
+                cubes.push(cubeData);
             }
+            
+            function getCubePositionsOnLine(startPos, endPos) {
+                const positions = [];
+                const deltaX = Math.abs(endPos.x - startPos.x);
+                const deltaY = Math.abs(endPos.y - startPos.y);
+                const deltaZ = Math.abs(endPos.z - startPos.z);
+                const startX = startPos.x;
+                const startY = startPos.y;
+                const startZ = startPos.z;
+                
+                let primaryAxis = (is2DMode || deltaY === 0) ? (deltaX > deltaZ ? 'x' : 'z') : 'y';
+
+                const getStep = (start, end) => (start < end) ? cubeSize : (start > end) ? -cubeSize : 0;
+                let stepX = getStep(startX, endPos.x);
+                let stepY = getStep(startY, endPos.y);
+                let stepZ = getStep(startZ, endPos.z);
+
+                if (primaryAxis !== 'x') stepX = 0;
+                if (primaryAxis !== 'y') stepY = 0;
+                if (primaryAxis !== 'z') stepZ = 0;
+
+                const currentPos = startPos.clone();
+                while (true) {
+                    // Snapping logic with Math.floor for robustness
+                    const snappedPos = new THREE.Vector3(
+                        Math.floor(currentPos.x / cubeSize) * cubeSize + cubeSize / 2,
+                        Math.floor(currentPos.y / cubeSize) * cubeSize + cubeSize / 2,
+                        Math.floor(currentPos.z / cubeSize) * cubeSize + cubeSize / 2
+                    );
+                    positions.push(snappedPos);
+
+                    if (currentPos.distanceTo(endPos) < 0.1) break;
+                    
+                    if (primaryAxis === 'x') currentPos.x += stepX;
+                    if (primaryAxis === 'y') currentPos.y += stepY;
+                    if (primaryAxis === 'z') currentPos.z += stepZ;
+                    
+                    const isBeyond = (primaryAxis === 'x' && ((stepX > 0 && currentPos.x > endPos.x) || (stepX < 0 && currentPos.x < endPos.x))) ||
+                                     (primaryAxis === 'y' && ((stepY > 0 && currentPos.y > endPos.y) || (stepY < 0 && currentPos.y < endPos.y))) ||
+                                     (primaryAxis === 'z' && ((stepZ > 0 && currentPos.z > endPos.z) || (stepZ < 0 && currentPos.z < endPos.z)));
+                    if(isBeyond) {
+                        currentPos.copy(endPos);
+                    }
+                }
+                
+                const uniquePositions = [];
+                const positionSet = new Set();
+                positions.forEach(pos => {
+                    const key = `${pos.x},${pos.y},${pos.z}`;
+                    if (!positionSet.has(key)) {
+                        positionSet.add(key);
+                        uniquePositions.push(pos);
+                    }
+                });
+
+                return uniquePositions;
+            }
+
+            function getCubesInPath(startPos, endPos) {
+                const positions = [];
+                const direction = new THREE.Vector3().subVectors(endPos, startPos).normalize();
+                const distance = startPos.distanceTo(endPos);
+                
+                for (let i = 0; i <= distance; i += cubeSize) {
+                    const point = new THREE.Vector3().addVectors(startPos, direction.clone().multiplyScalar(i));
+                    // Snapping logic with Math.floor for robustness
+                    const snappedX = Math.floor(point.x / cubeSize) * cubeSize + cubeSize / 2;
+                    const snappedY = Math.floor(point.y / cubeSize) * cubeSize + cubeSize / 2;
+                    const snappedZ = Math.floor(point.z / cubeSize) * cubeSize + cubeSize / 2;
+                    
+                    const snappedPosition = new THREE.Vector3(snappedX, snappedY, snappedZ);
+                    positions.push(snappedPosition);
+                }
+
+                const uniquePositions = [];
+                const positionSet = new Set();
+                positions.forEach(pos => {
+                    const key = `${pos.x},${pos.y},${pos.z}`;
+                    if (!positionSet.has(key)) {
+                        positionSet.add(key);
+                        uniquePositions.push(pos);
+                    }
+                });
+                return uniquePositions;
+            }
+
 
             function clearAllCubes() {
                 while(cubes.length > 0) {
                     const cube = cubes.pop();
-                    scene.remove(cube);
+                    cubeContainer.remove(cube.mesh);
                 }
             }
             
             function deleteCubeAt(position) {
-                const cubeToDelete = cubes.find(c => c.position.equals(position));
+                const cubeToDelete = cubes.find(c => c.mesh.position.distanceTo(position) < 0.1);
                 if (cubeToDelete) {
-                    scene.remove(cubeToDelete);
+                    cubeContainer.remove(cubeToDelete.mesh);
                     const index = cubes.indexOf(cubeToDelete);
                     if (index > -1) {
                         cubes.splice(index, 1);
@@ -243,8 +389,7 @@
                 isDeleteMode = (mode === 'minus');
                 plusSignBtn.classList.toggle('active', isPlacementMode);
                 minusSignBtn.classList.toggle('active', isDeleteMode);
-                ghostCube.material = isPlacementMode ? ghostPlacementMaterial : ghostDeleteMaterial;
-                ghostCube.visible = true;
+                ghostPlacementMaterial.color.setHex(currentCubeColor);
                 document.body.style.cursor = isPlacementMode ? 'copy' : 'crosshair';
             }
             
@@ -253,15 +398,12 @@
 
             clearAllBtn.addEventListener('click', () => {
                 clearAllCubes();
-                setMode('plus'); // Reset to placement mode
-                ghostCube.visible = true;
+                setMode('plus');
                 document.body.style.cursor = 'copy';
             });
             
-            // Initial state
             setMode('plus');
 
-            // Color buttons logic
             const colors = {
                 'color-red': 0xFF0000,
                 'color-yellow': 0xFFFF00,
@@ -280,122 +422,159 @@
                 });
             });
 
-            // Set a default color to start
             document.getElementById('color-red').click();
 
+            function getIntersectionPoint(event) {
+                mouse.x = (event.clientX / window.innerWidth) * 2 - 1;
+                mouse.y = -(event.clientY / window.innerHeight) * 2 + 1;
+                raycaster.setFromCamera(mouse, camera);
 
-            // Mouse move for moving ghost cube and dragging
+                const cubeIntersects = raycaster.intersectObjects(cubeContainer.children);
+                const groundIntersects = raycaster.intersectObjects([groundPlane]);
+                
+                let newPos = null;
+
+                if (cubeIntersects.length > 0) {
+                    const intersectedObject = cubeIntersects[0].object;
+                    const normal = cubeIntersects[0].face.normal.clone().normalize();
+                    newPos = new THREE.Vector3().addVectors(intersectedObject.getWorldPosition(new THREE.Vector3()), normal.multiplyScalar(cubeSize));
+                } else if (groundIntersects.length > 0) {
+                    const hitPoint = groundIntersects[0].point;
+                    newPos = new THREE.Vector3(hitPoint.x, cubeSize / 2, hitPoint.z);
+                }
+                
+                if (newPos) {
+                    // This is the updated snapping logic
+                    const snappedX = Math.floor(newPos.x / cubeSize) * cubeSize + cubeSize / 2;
+                    const snappedY = Math.floor(newPos.y / cubeSize) * cubeSize + cubeSize / 2;
+                    const snappedZ = Math.floor(newPos.z / cubeSize) * cubeSize + cubeSize / 2;
+                    return new THREE.Vector3(snappedX, snappedY, snappedZ);
+                }
+                return null;
+            }
+
+            function clearGhostLine() {
+                while(ghostLineGroup.children.length > 0) {
+                    ghostLineGroup.remove(ghostLineGroup.children[0]);
+                }
+            }
+
+            function updateGhostLine(startPos, endPos) {
+                clearGhostLine();
+                const positions = getCubePositionsOnLine(startPos, endPos);
+                positions.forEach(pos => {
+                    const ghostCube = new THREE.Mesh(ghostGeometry, ghostPlacementMaterial);
+                    ghostCube.position.copy(pos);
+                    ghostLineGroup.add(ghostCube);
+                });
+            }
+
             renderer.domElement.addEventListener('mousemove', (event) => {
-                if (!isDraggingCamera) {
-                    mouse.x = (event.clientX / window.innerWidth) * 2 - 1;
-                    mouse.y = -(event.clientY / window.innerHeight) * 2 + 1;
-                    raycaster.setFromCamera(mouse, camera);
+                if (isDraggingCamera) {
+                    const deltaX = event.clientX - previousMousePosition.x;
+                    const deltaY = event.clientY - previousMousePosition.y;
+                    const target = new THREE.Vector3();
+                    camera.getWorldDirection(target);
+                    const right = new THREE.Vector3().crossVectors(camera.up, target);
+                    const up = new THREE.Vector3().crossVectors(target, right);
+                    const yawRotation = new THREE.Quaternion().setFromAxisAngle(up, deltaX * -0.01);
+                    const pitchRotation = new THREE.Quaternion().setFromAxisAngle(right, deltaY * 0.01);
+                    const finalRotation = new THREE.Quaternion().multiplyQuaternions(pitchRotation, yawRotation);
+                    const rotatedPosition = new THREE.Vector3().copy(camera.position).applyQuaternion(finalRotation);
+                    camera.position.copy(rotatedPosition);
+                    camera.lookAt(0, 0, 0);
+                    previousMousePosition.x = event.clientX;
+                    previousMousePosition.y = event.clientY;
+                    return;
+                }
 
-                    let newPos = null;
-                    const cubeIntersects = raycaster.intersectObjects(cubes);
-                    const groundIntersects = raycaster.intersectObjects([groundPlane]);
+                const mousePos = getIntersectionPoint(event);
+                if (!mousePos) {
+                    ghostLineGroup.visible = false;
+                    ghostCube.visible = false;
+                    return;
+                }
 
-                    if (isPlacementMode) {
-                        if (cubeIntersects.length > 0) {
-                            const intersectedObject = cubeIntersects[0].object;
-                            const normal = cubeIntersects[0].face.normal.clone().normalize();
-                            newPos = new THREE.Vector3().addVectors(intersectedObject.position, normal.multiplyScalar(cubeSize));
-                        } else if (groundIntersects.length > 0) {
-                            const hitPoint = groundIntersects[0].point;
-                            const snappedX = Math.round(hitPoint.x / cubeSize) * cubeSize + cubeSize / 2;
-                            const snappedZ = Math.round(hitPoint.z / cubeSize) * cubeSize + cubeSize / 2;
-                            newPos = new THREE.Vector3(snappedX, cubeSize / 2, snappedZ);
-                        }
-                    } else if (isDeleteMode) {
-                        if (cubeIntersects.length > 0) {
-                            newPos = cubeIntersects[0].object.position;
-                        }
-                    }
-                    
-                    if (newPos) {
-                        ghostCubePosition.copy(newPos);
-                        const withinBounds = Math.abs(ghostCubePosition.x) <= MAX_GRID_POS &&
-                                            ghostCubePosition.y >= cubeSize / 2 && ghostCubePosition.y <= (gridSize * cubeSize) + cubeSize / 2 &&
-                                            Math.abs(ghostCubePosition.z) <= MAX_GRID_POS;
-                        
-                        if (withinBounds) {
-                            ghostCube.position.copy(ghostCubePosition);
-                            ghostCube.visible = true;
-                            if (isDragging) {
-                                if (previousPosition && !ghostCubePosition.equals(previousPosition)) {
-                                    if (isPlacementMode) {
-                                        createCube(ghostCubePosition);
-                                    } else {
-                                        deleteCubeAt(ghostCubePosition);
-                                    }
-                                    previousPosition = ghostCubePosition.clone();
-                                }
-                            }
-                        } else {
-                            ghostCube.visible = false;
-                        }
-                    } else {
+                if (isDragging) {
+                    if (isShiftDragging) {
+                        updateGhostLine(dragStartPoint, mousePos);
+                        ghostLineGroup.visible = true;
                         ghostCube.visible = false;
+                    } else {
+                        if (lastDraggedPosition && mousePos.distanceTo(lastDraggedPosition) > 0.1) {
+                            const positions = getCubesInPath(lastDraggedPosition, mousePos);
+                            positions.forEach(pos => {
+                                if (isPlacementMode) {
+                                    createCube(pos);
+                                } else if (isDeleteMode) {
+                                    deleteCubeAt(pos);
+                                }
+                            });
+                            lastDraggedPosition = mousePos.clone();
+                        }
+                        ghostCubePosition.copy(mousePos);
+                        ghostCube.position.copy(ghostCubePosition);
+                        ghostCube.visible = true;
+                        clearGhostLine();
                     }
+                } else {
+                    clearGhostLine();
+                    ghostCubePosition.copy(mousePos);
+                    ghostCube.position.copy(ghostCubePosition);
+                    ghostCube.visible = true;
                 }
             });
 
-            // Click and drag listeners
             renderer.domElement.addEventListener('mousedown', (event) => {
+                if (event.target.tagName.toLowerCase() !== 'canvas') {
+                    return;
+                }
+                
                 isDragging = true;
-                isDraggingCamera = event.shiftKey; // Hold shift to drag camera
+                isShiftDragging = event.shiftKey;
+                isDraggingCamera = event.shiftKey && !isPlacementMode && !isDeleteMode && !is2DMode;
                 if (isDraggingCamera) {
                     previousMousePosition.x = event.clientX;
                     previousMousePosition.y = event.clientY;
                     document.body.style.cursor = 'grabbing';
                 } else {
-                    previousPosition = ghostCubePosition.clone();
-                    if (ghostCube.visible) {
+                    dragStartPoint = getIntersectionPoint(event);
+                    if (!isShiftDragging && dragStartPoint) {
                         if (isPlacementMode) {
-                            createCube(ghostCubePosition);
+                            createCube(dragStartPoint);
                         } else if (isDeleteMode) {
-                            deleteCubeAt(ghostCubePosition);
+                            deleteCubeAt(dragStartPoint);
                         }
+                        lastDraggedPosition = dragStartPoint.clone();
                     }
                 }
             });
 
-            renderer.domElement.addEventListener('mouseup', () => {
+            renderer.domElement.addEventListener('mouseup', (event) => {
+                if (isDragging && isShiftDragging && dragStartPoint) {
+                    const dragEndPoint = getIntersectionPoint(event);
+                    if (dragEndPoint) {
+                        const positions = getCubePositionsOnLine(dragStartPoint, dragEndPoint);
+                        positions.forEach(pos => {
+                            if (isPlacementMode) {
+                                createCube(pos);
+                            } else {
+                                deleteCubeAt(pos);
+                            }
+                        });
+                    }
+                }
                 isDragging = false;
+                isShiftDragging = false;
                 isDraggingCamera = false;
-                previousPosition = null;
+                dragStartPoint = null;
+                lastDraggedPosition = null;
+                clearGhostLine();
                 document.body.style.cursor = isPlacementMode ? 'copy' : 'crosshair';
             });
-            
-            renderer.domElement.addEventListener('mousemove', (event) => {
-                if (isDraggingCamera && !is2DMode) {
-                    const deltaX = event.clientX - previousMousePosition.x;
-                    const deltaY = event.clientY - previousMousePosition.y;
 
-                    const target = new THREE.Vector3();
-                    camera.getWorldDirection(target);
-
-                    const right = new THREE.Vector3().crossVectors(camera.up, target);
-                    const up = new THREE.Vector3().crossVectors(target, right);
-
-                    const yawRotation = new THREE.Quaternion().setFromAxisAngle(up, deltaX * -0.01);
-                    const pitchRotation = new THREE.Quaternion().setFromAxisAngle(right, deltaY * 0.01);
-
-                    const finalRotation = new THREE.Quaternion().multiplyQuaternions(pitchRotation, yawRotation);
-
-                    const rotatedPosition = new THREE.Vector3().copy(camera.position).applyQuaternion(finalRotation);
-                    
-                    camera.position.copy(rotatedPosition);
-                    camera.lookAt(0, 0, 0);
-
-                    previousMousePosition.x = event.clientX;
-                    previousMousePosition.y = event.clientY;
-                }
-            });
-
-            // Click listener for placing a single cube (without dragging)
-            renderer.domElement.addEventListener('click', () => {
-                if (!isDragging && ghostCube.visible) {
+            renderer.domElement.addEventListener('click', (event) => {
+                if (!isDragging && !event.shiftKey && ghostCube.visible) {
                     if (isPlacementMode) {
                         createCube(ghostCubePosition);
                     } else if (isDeleteMode) {
@@ -404,42 +583,65 @@
                 }
             });
 
-            // Keyboard controls
             window.addEventListener('keydown', (event) => {
                 let moved = false;
                 const newPos = ghostCubePosition.clone();
-
-                switch(event.key) {
-                    case 'ArrowUp':
-                        newPos.z -= cubeSize;
-                        moved = true;
-                        break;
-                    case 'ArrowDown':
-                        newPos.z += cubeSize;
-                        moved = true;
-                        break;
-                    case 'ArrowLeft':
-                        newPos.x -= cubeSize;
-                        moved = true;
-                        break;
-                    case 'ArrowRight':
-                        newPos.x += cubeSize;
-                        moved = true;
-                        break;
-                    case ' ':
-                    case 'Enter':
-                        if (isPlacementMode) {
-                            createCube(ghostCubePosition);
-                        } else if (isDeleteMode) {
+                if (event.ctrlKey || event.metaKey) {
+                    if (event.key === 'c' || event.key === 'C') {
+                        const cubeToCopy = cubes.find(c => c.mesh.getWorldPosition(new THREE.Vector3()).distanceTo(ghostCubePosition) < 0.1);
+                        if (cubeToCopy) {
+                            clipboard = { color: cubeToCopy.data.color };
+                        }
+                    } else if (event.key === 'x' || event.key === 'X') {
+                        const cubeToCut = cubes.find(c => c.mesh.getWorldPosition(new THREE.Vector3()).distanceTo(ghostCubePosition) < 0.1);
+                        if (cubeToCut) {
+                            clipboard = { color: cubeToCut.data.color };
                             deleteCubeAt(ghostCubePosition);
                         }
-                        event.preventDefault(); // Prevents page from scrolling with space/enter key
-                        break;
+                    } else if (event.key === 'v' || event.key === 'V') {
+                        if (clipboard) {
+                            createCube(ghostCubePosition, clipboard.color);
+                        }
+                    }
+                } else {
+                    switch(event.key) {
+                        case 'ArrowUp':
+                            newPos.z -= cubeSize;
+                            moved = true;
+                            break;
+                        case 'ArrowDown':
+                            newPos.z += cubeSize;
+                            moved = true;
+                            break;
+                        case 'ArrowLeft':
+                            newPos.x -= cubeSize;
+                            moved = true;
+                            break;
+                        case 'ArrowRight':
+                            newPos.x += cubeSize;
+                            moved = true;
+                            break;
+                        case '+':
+                            camera.translateZ(-3);
+                            break;
+                        case '-':
+                            camera.translateZ(3);
+                            break;
+                        case ' ':
+                        case 'Enter':
+                            if (isPlacementMode) {
+                                createCube(ghostCubePosition);
+                            } else if (isDeleteMode) {
+                                deleteCubeAt(ghostCubePosition);
+                            }
+                            event.preventDefault();
+                            break;
+                    }
                 }
 
                 if (moved) {
                     const withinBounds = Math.abs(newPos.x) <= MAX_GRID_POS &&
-                                         newPos.y >= cubeSize / 2 && newPos.y <= (gridSize * cubeSize) + cubeSize / 2 &&
+                                         newPos.y <= MAX_HEIGHT_POS && newPos.y >= cubeSize / 2 &&
                                          Math.abs(newPos.z) <= MAX_GRID_POS;
                     if (withinBounds) {
                         ghostCubePosition.copy(newPos);
@@ -449,12 +651,11 @@
                 }
             });
             
-            // Camera View Controls
             const zoomInBtn = document.getElementById('zoom-in');
             const zoomOutBtn = document.getElementById('zoom-out');
             const view2DBtn = document.getElementById('view-2d');
             const view3DBtn = document.getElementById('view-3d');
-
+            
             function setViewMode(mode) {
                 is2DMode = (mode === '2d');
                 view2DBtn.classList.toggle('active', is2DMode);
@@ -463,7 +664,6 @@
                 if (is2DMode) {
                     camera.position.copy(topDownCameraPosition);
                     camera.lookAt(0, 0, 0);
-                    gridHelper.rotation.x = 0;
                 } else {
                     camera.position.copy(default3DCameraPosition);
                     camera.lookAt(0, 0, 0);
@@ -481,13 +681,11 @@
                 camera.translateZ(3);
             });
             
-            // --- Animation Loop ---
             function animate() {
                 requestAnimationFrame(animate);
                 renderer.render(scene, camera);
             }
 
-            // Add lights to the scene
             const ambientLight = new THREE.AmbientLight(0xffffff, 0.5);
             scene.add(ambientLight);
             const directionalLight = new THREE.DirectionalLight(0xffffff, 0.8);
@@ -496,7 +694,6 @@
 
             animate();
 
-            // Handle window resizing
             window.addEventListener('resize', () => {
                 camera.aspect = window.innerWidth / window.innerHeight;
                 camera.updateProjectionMatrix();
